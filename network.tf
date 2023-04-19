@@ -442,6 +442,26 @@ resource "aws_launch_template" "asg_launch_template" {
     Restart=on-failure
 
     [Install]
+    WantedBy=multi-user.target" > /etc/systemd/system/eventrise_apis.service
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable eventrise_apis.service
+    sudo systemctl start eventrise_apis.service
+
+    echo "[Unit]
+    Description=app.js - making your environment variables
+    Documentation=https://example.com
+    Wants=network-online.target
+    After=network-online.target
+
+    [Service]
+    Type=simple
+    User=ec2-user
+    WorkingDirectory=/home/ec2-user/eventrise/
+    ExecStart=/usr/bin/npm start
+    Restart=on-failure
+
+    [Install]
     WantedBy=multi-user.target" > /etc/systemd/system/eventrise.service
 
     sudo systemctl daemon-reload
