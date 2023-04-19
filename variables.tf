@@ -35,9 +35,9 @@ variable "domain" {
 }
 
 variable "CLIENT_ID" {
-    type= string
+  type = string
 }
 
 variable "CLIENT_SECRET" {
-    type= string
+  type = string
 }

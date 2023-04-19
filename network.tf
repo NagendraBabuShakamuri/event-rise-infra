@@ -146,7 +146,7 @@ resource "aws_security_group" "db-sg" {
 
 # Create a DB subnet group
 resource "aws_db_subnet_group" "private_db_subnet_group" {
-  name = "private_db_subnet_group"
+  name       = "private_db_subnet_group"
   subnet_ids = [for s in aws_subnet.private-subnet : s.id]
 }
 
@@ -157,15 +157,15 @@ resource "aws_kms_key" "rds_kms_key" {
 #MongoDB database
 
 resource "aws_docdb_cluster" "mongodb" {
-  cluster_identifier      = "my-mongodb-cluster"
-  engine                  = "docdb"
-  master_username         = var.db_username
-  master_password         = var.db_password
-  storage_encrypted       = true
-  kms_key_id              = aws_kms_key.rds_kms_key.arn
-  db_subnet_group_name    = aws_db_subnet_group.private_db_subnet_group.name
-  vpc_security_group_ids  = [aws_security_group.db-sg.id]
-  skip_final_snapshot     = true
+  cluster_identifier     = "my-mongodb-cluster"
+  engine                 = "docdb"
+  master_username        = var.db_username
+  master_password        = var.db_password
+  storage_encrypted      = true
+  kms_key_id             = aws_kms_key.rds_kms_key.arn
+  db_subnet_group_name   = aws_db_subnet_group.private_db_subnet_group.name
+  vpc_security_group_ids = [aws_security_group.db-sg.id]
+  skip_final_snapshot    = true
 }
 
 #Get the latest AMI.
@@ -314,7 +314,7 @@ resource "aws_lb_target_group" "webapp_tg" {
 }
 
 data "aws_acm_certificate" "ssl_certificate" {
-  domain   = "${var.domain}"
+  domain   = var.domain
   statuses = ["ISSUED"]
 }
 
@@ -572,7 +572,7 @@ resource "aws_key_pair" "ec2keypair" {
 }
 
 data "aws_route53_zone" "selected" {
-  name = "${var.domain}"
+  name = var.domain
 }
 
 # Create a new A record that points to the Load balancer.
