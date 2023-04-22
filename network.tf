@@ -97,8 +97,39 @@ resource "aws_security_group" "app-lb-sg" {
   }
 }
 
-resource "aws_security_group" "app-sg" {
-  name        = "${var.aws_profile}-application-sg"
+resource "aws_security_group" "frontend-app-sg" {
+  name        = "${var.aws_profile}-frontend-app-sg"
+  description = "Default security group to allow inbound/outbound from the VPC"
+  vpc_id      = aws_vpc.dev-vpc.id
+  depends_on  = [aws_vpc.dev-vpc]
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port       = 3006
+    to_port         = 3006
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app-lb-sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.aws_profile}-frontend-app-sg"
+  }
+}
+
+resource "aws_security_group" "backend-app-sg" {
+  name        = "${var.aws_profile}-backend-app-sg"
   description = "Default security group to allow inbound/outbound from the VPC"
   vpc_id      = aws_vpc.dev-vpc.id
   depends_on  = [aws_vpc.dev-vpc]
@@ -124,7 +155,7 @@ resource "aws_security_group" "app-sg" {
   }
 
   tags = {
-    Name = "${var.aws_profile}-application-sg"
+    Name = "${var.aws_profile}-backend-app-sg"
   }
 }
 
@@ -134,10 +165,10 @@ resource "aws_security_group" "db-sg" {
   vpc_id      = aws_vpc.dev-vpc.id
   depends_on  = [aws_vpc.dev-vpc]
   ingress {
-    from_port       = 3306
-    to_port         = 3306
+    from_port       = 27017
+    to_port         = 27017
     protocol        = "tcp"
-    security_groups = [aws_security_group.app-sg.id]
+    security_groups = [aws_security_group.backend-app-sg.id]
   }
   tags = {
     Name = "${var.aws_profile}-database-sg"
@@ -147,7 +178,7 @@ resource "aws_security_group" "db-sg" {
 # Create a DB subnet group
 resource "aws_db_subnet_group" "private_db_subnet_group" {
   name       = "private_db_subnet_group"
-  subnet_ids = [for s in aws_subnet.private-subnet : s.id]
+  subnet_ids = [for s in aws_subnet.public-subnet : s.id]
 }
 
 resource "aws_kms_key" "rds_kms_key" {
@@ -156,16 +187,34 @@ resource "aws_kms_key" "rds_kms_key" {
 
 #MongoDB database
 
+resource "aws_docdb_cluster_parameter_group" "example" {
+  family      = "docdb4.0"
+  name        = "example"
+  description = "docdb cluster parameter group"
+
+  parameter {
+    name  = "tls"
+    value = "disabled"
+  }
+}
+
 resource "aws_docdb_cluster" "mongodb" {
-  cluster_identifier     = "my-mongodb-cluster"
-  engine                 = "docdb"
-  master_username        = var.db_username
-  master_password        = var.db_password
-  storage_encrypted      = true
-  kms_key_id             = aws_kms_key.rds_kms_key.arn
-  db_subnet_group_name   = aws_db_subnet_group.private_db_subnet_group.name
-  vpc_security_group_ids = [aws_security_group.db-sg.id]
-  skip_final_snapshot    = true
+  cluster_identifier              = "my-mongodb-cluster"
+  engine                          = "docdb"
+  master_username                 = var.db_username
+  master_password                 = var.db_password
+  storage_encrypted               = true
+  kms_key_id                      = aws_kms_key.rds_kms_key.arn
+  db_subnet_group_name            = aws_db_subnet_group.private_db_subnet_group.name
+  vpc_security_group_ids          = [aws_security_group.db-sg.id]
+  db_cluster_parameter_group_name = aws_docdb_cluster_parameter_group.example.name
+  skip_final_snapshot             = true
+}
+
+resource "aws_docdb_cluster_instance" "cluster_instances" {
+  identifier         = "docdb-cluster-demo"
+  cluster_identifier = aws_docdb_cluster.mongodb.id
+  instance_class     = "db.t3.medium"
 }
 
 #Get the latest AMI.
@@ -276,27 +325,62 @@ resource "aws_iam_role_policy_attachment" "s3_access_role_attachment" {
   role       = aws_iam_role.EC2-EventRise.name
 }
 
-resource "aws_iam_role_policy_attachment" "cloudwatch_agent_policy_attachment" {
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+resource "aws_iam_role_policy_attachment" "docdb_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonDocDBFullAccess"
+  role       = aws_iam_role.EC2-EventRise.name
+}
+
+resource "aws_iam_role_policy_attachment" "s3_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
   role       = aws_iam_role.EC2-EventRise.name
 }
 
 # Application load balancer
-resource "aws_lb" "app-lb" {
-  name               = "${var.aws_profile}-app-load-balancer"
+resource "aws_lb" "frontend-lb" {
+  name               = "${var.aws_profile}-frontend-load-balancer"
   internal           = false
   load_balancer_type = "application"
   subnets            = [for s in aws_subnet.public-subnet : s.id]
   security_groups    = [aws_security_group.app-lb-sg.id]
 
   tags = {
-    Name = "${var.aws_profile}-app-load-balancer"
+    Name = "${var.aws_profile}-frontend-load-balancer"
+  }
+}
+
+resource "aws_lb" "backend-lb" {
+  name               = "${var.aws_profile}-backend-load-balancer"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = [for s in aws_subnet.public-subnet : s.id]
+  security_groups    = [aws_security_group.app-lb-sg.id]
+
+  tags = {
+    Name = "${var.aws_profile}-backend-load-balancer"
   }
 }
 
 # Target group
-resource "aws_lb_target_group" "webapp_tg" {
-  name        = "webapp-tg"
+resource "aws_lb_target_group" "frontend_tg" {
+  name        = "frontend-tg"
+  port        = 3006
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.dev-vpc.id
+  target_type = "instance"
+  health_check {
+    enabled             = true
+    interval            = 60
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    timeout             = 2
+    healthy_threshold   = 2
+    unhealthy_threshold = 5
+  }
+}
+
+resource "aws_lb_target_group" "backend_tg" {
+  name        = "backend-tg"
   port        = 3000
   protocol    = "HTTP"
   vpc_id      = aws_vpc.dev-vpc.id
@@ -313,90 +397,52 @@ resource "aws_lb_target_group" "webapp_tg" {
   }
 }
 
-data "aws_acm_certificate" "ssl_certificate" {
-  domain   = var.domain
+data "aws_acm_certificate" "frontend_ssl_certificate" {
+  domain   = "www.${var.domain}"
   statuses = ["ISSUED"]
 }
 
-resource "aws_lb_listener" "webapp_listener" {
-  load_balancer_arn = aws_lb.app-lb.arn
+data "aws_acm_certificate" "backend_ssl_certificate" {
+  domain   = "api.${var.domain}"
+  statuses = ["ISSUED"]
+}
+
+resource "aws_lb_listener" "frontend_listener" {
+  load_balancer_arn = aws_lb.frontend-lb.arn
   port              = "443"
   protocol          = "HTTPS"
-  certificate_arn   = data.aws_acm_certificate.ssl_certificate.arn
+  certificate_arn   = data.aws_acm_certificate.frontend_ssl_certificate.arn
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.webapp_tg.arn
+    target_group_arn = aws_lb_target_group.frontend_tg.arn
   }
 }
 
-data "aws_caller_identity" "current" {}
+resource "aws_lb_listener" "backend_listener" {
+  load_balancer_arn = aws_lb.backend-lb.arn
+  port              = "443"
+  protocol          = "HTTPS"
+  certificate_arn   = data.aws_acm_certificate.backend_ssl_certificate.arn
 
-resource "aws_kms_key" "ebs_kms_key" {
-  description             = "Symmetric customer-managed KMS key for EBS"
-  deletion_window_in_days = 10
-  policy = jsonencode({
-    "Version" : "2012-10-17",
-    "Statement" : [{
-      "Sid" : "Enable IAM User Permissions",
-      "Effect" : "Allow",
-      "Principal" : {
-        "AWS" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-      },
-      "Action" : "kms:*",
-      "Resource" : "*"
-      },
-      {
-        "Sid" : "Allow service-linked role use of the customer managed key",
-        "Effect" : "Allow",
-        "Principal" : {
-          "AWS" : [
-            "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-          ]
-        },
-        "Action" : [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:ReEncrypt*",
-          "kms:GenerateDataKey*",
-          "kms:DescribeKey"
-        ],
-        "Resource" : "*"
-      },
-      {
-        "Sid" : "Allow attachment of persistent resources",
-        "Effect" : "Allow",
-        "Principal" : {
-          "AWS" : [
-            "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-          ]
-        },
-        "Action" : [
-          "kms:CreateGrant"
-        ],
-        "Resource" : "*",
-        "Condition" : {
-          "Bool" : {
-            "kms:GrantIsForAWSResource" : true
-          }
-        }
-      }
-    ]
-  })
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend_tg.arn
+  }
 }
 
 # Launch Configuration
-resource "aws_launch_template" "asg_launch_template" {
-  name          = "asg-launch-config"
-  image_id      = data.aws_ami.custom_ami.id
-  instance_type = "t2.micro"
-  # key_name                = aws_key_pair.ec2keypair.key_name
+resource "aws_launch_template" "frontend_asg_launch_template" {
+  name                    = "frontend-asg-launch-config"
+  image_id                = data.aws_ami.custom_ami.id
+  instance_type           = "t2.micro"
+  key_name                = aws_key_pair.ec2keypair.key_name
   ebs_optimized           = false
   disable_api_termination = false
 
   network_interfaces {
     associate_public_ip_address = true
-    security_groups             = [aws_security_group.app-sg.id]
+    security_groups             = [aws_security_group.frontend-app-sg.id]
   }
 
   block_device_mappings {
@@ -405,15 +451,75 @@ resource "aws_launch_template" "asg_launch_template" {
       volume_size           = 10
       volume_type           = "gp2"
       delete_on_termination = true
-      encrypted             = true
-      kms_key_id            = aws_kms_key.ebs_kms_key.arn
     }
   }
 
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "Webapp EC2 Instance"
+      Name = "Frontend EC2 Instance"
+    }
+  }
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash   
+
+    echo "[Unit]
+    Description=app.js - making your environment variables
+    Documentation=https://example.com
+    Wants=network-online.target
+    After=network-online.target
+
+    [Service]
+    Environment="REACT_APP_BASE_URL=https://api.eventrise.me/"
+    Environment="REACT_APP_API_SERVER=https://api.eventrise.me"
+    Type=simple
+    User=ec2-user
+    WorkingDirectory=/home/ec2-user/eventrise/
+    ExecStart=/usr/bin/npm start
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target" > /etc/systemd/system/eventrise.service
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable eventrise.service
+    sudo systemctl start eventrise.service
+    
+  EOF
+  )
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
+}
+
+resource "aws_launch_template" "backend_asg_launch_template" {
+  name                    = "backend-asg-launch-config"
+  image_id                = data.aws_ami.custom_ami.id
+  instance_type           = "t2.micro"
+  key_name                = aws_key_pair.ec2keypair.key_name
+  ebs_optimized           = false
+  disable_api_termination = false
+
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.backend-app-sg.id]
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 10
+      volume_type           = "gp2"
+      delete_on_termination = true
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "Backend EC2 Instance"
     }
   }
 
@@ -429,12 +535,11 @@ resource "aws_launch_template" "asg_launch_template" {
     [Service]
     Environment="AWS_DEFAULT_REGION=${var.region}"
     Environment="S3_BUCKET=${aws_s3_bucket.private_bucket.id}"
-    Environment="DATABASE=${var.db_name}"
-    Environment="HOST=${aws_docdb_cluster.mongodb.endpoint}"
-    Environment="USER_NAME=${aws_docdb_cluster.mongodb.master_username}"
-    Environment="PASSWORD=${var.db_password}"
+    Environment="MONGO_CONN_STR=mongodb://${var.db_username}:${var.db_password}@${aws_docdb_cluster_instance.cluster_instances.endpoint}:27017/web?retryWrites=false"
     Environment="CLIENT_ID=${var.CLIENT_ID}"
     Environment="CLIENT_SECRET=${var.CLIENT_SECRET}"
+    Environment="STRIPE_PUBLISHABLE_KEY=pk_test_51Mxzk4JxhojHtBxQQ2olQn82o3gvqx9UhkUTa9Ek1PBvvV4WLjgongrluAy2pmxJnoobSy0yz68AxBk95lVQNmHZ00bgO5ojnB"
+    Environment="STRIPE_SECRET_KEY=sk_test_51Mxzk4JxhojHtBxQCLvUS6MxT4yf5GgqDU6dio05rlmPGvNBoK8XgX1iBG6WnGnPzKkFypQI9WQTtzDbdhLMGJIj00rXRoY1Jy"
     Type=simple
     User=ec2-user
     WorkingDirectory=/home/ec2-user/event-rise-apis/
@@ -447,36 +552,7 @@ resource "aws_launch_template" "asg_launch_template" {
     sudo systemctl daemon-reload
     sudo systemctl enable eventrise_apis.service
     sudo systemctl start eventrise_apis.service
-
-    echo "[Unit]
-    Description=app.js - making your environment variables
-    Documentation=https://example.com
-    Wants=network-online.target
-    After=network-online.target
-
-    [Service]
-    Type=simple
-    User=ec2-user
-    WorkingDirectory=/home/ec2-user/eventrise/
-    ExecStart=/usr/bin/npm start
-    Restart=on-failure
-
-    [Install]
-    WantedBy=multi-user.target" > /etc/systemd/system/eventrise.service
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable eventrise.service
-    sudo systemctl start eventrise.service
-
-    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-    -a fetch-config \
-    -m ec2 \
-    -c file:/opt/aws/amazon-cloudwatch-agent/etc/cloudwatch-config.json \
-    -s
-
-    sudo systemctl start amazon-cloudwatch-agent
-
-    sudo systemctl enable amazon-cloudwatch-agent
+    
   EOF
   )
 
@@ -486,12 +562,12 @@ resource "aws_launch_template" "asg_launch_template" {
 }
 
 # Auto Scaling Group
-resource "aws_autoscaling_group" "webapp_asg" {
-  name                = "webapp-asg"
-  target_group_arns   = [aws_lb_target_group.webapp_tg.arn]
+resource "aws_autoscaling_group" "frontend_asg" {
+  name                = "frontend-asg"
+  target_group_arns   = [aws_lb_target_group.frontend_tg.arn]
   vpc_zone_identifier = [for s in aws_subnet.public-subnet : s.id]
   launch_template {
-    id      = aws_launch_template.asg_launch_template.id
+    id      = aws_launch_template.frontend_asg_launch_template.id
     version = "$Latest"
   }
   min_size                  = 1
@@ -502,59 +578,130 @@ resource "aws_autoscaling_group" "webapp_asg" {
   default_cooldown          = 60
   tag {
     key                 = "Name"
-    value               = "WebApp EC2 Instance"
+    value               = "Frontend EC2 Instance"
     propagate_at_launch = true
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "scale_up_alarm" {
-  alarm_name          = "high-cpu-usage"
+resource "aws_autoscaling_group" "backend_asg" {
+  name                = "backend-asg"
+  target_group_arns   = [aws_lb_target_group.backend_tg.arn]
+  vpc_zone_identifier = [for s in aws_subnet.public-subnet : s.id]
+  launch_template {
+    id      = aws_launch_template.backend_asg_launch_template.id
+    version = "$Latest"
+  }
+  min_size                  = 1
+  max_size                  = 3
+  desired_capacity          = 1
+  health_check_type         = "ELB"
+  health_check_grace_period = 120
+  default_cooldown          = 60
+  tag {
+    key                 = "Name"
+    value               = "Backend EC2 Instance"
+    propagate_at_launch = true
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "frontend_scale_up_alarm" {
+  alarm_name          = "frontend-high-cpu-usage"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
   period              = 60
   statistic           = "Average"
-  threshold           = 5
-  alarm_description   = "This metric checks if CPU usage is higher than 5% in the past 2 min"
-  alarm_actions       = [aws_autoscaling_policy.scale_up_policy.arn]
+  threshold           = 20
+  alarm_description   = "This metric checks if CPU usage is higher than 20% in the past 2 min"
+  alarm_actions       = [aws_autoscaling_policy.frontend_scale_up_policy.arn]
   actions_enabled     = true
   dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
+    AutoScalingGroupName = aws_autoscaling_group.frontend_asg.name
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "scale_down_alarm" {
-  alarm_name          = "low-cpu-usage"
+resource "aws_cloudwatch_metric_alarm" "backend_scale_up_alarm" {
+  alarm_name          = "backend-high-cpu-usage"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 20
+  alarm_description   = "This metric checks if CPU usage is higher than 20% in the past 2 min"
+  alarm_actions       = [aws_autoscaling_policy.backend_scale_up_policy.arn]
+  actions_enabled     = true
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.backend_asg.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "frontend_scale_down_alarm" {
+  alarm_name          = "frontend-low-cpu-usage"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
   period              = 60
   statistic           = "Average"
-  threshold           = 3
-  alarm_description   = "This metric checks if CPU usage is lower than 3% for the past 2 min"
-  alarm_actions       = [aws_autoscaling_policy.scale_down_policy.arn]
+  threshold           = 10
+  alarm_description   = "This metric checks if CPU usage is lower than 10% for the past 2 min"
+  alarm_actions       = [aws_autoscaling_policy.frontend_scale_down_policy.arn]
   actions_enabled     = true
   dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
+    AutoScalingGroupName = aws_autoscaling_group.frontend_asg.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "backend_scale_down_alarm" {
+  alarm_name          = "backend-low-cpu-usage"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 10
+  alarm_description   = "This metric checks if CPU usage is lower than 10% for the past 2 min"
+  alarm_actions       = [aws_autoscaling_policy.backend_scale_down_policy.arn]
+  actions_enabled     = true
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.backend_asg.name
   }
 }
 
 # Scale up policy
-resource "aws_autoscaling_policy" "scale_up_policy" {
-  name                   = "webapp_scale-up-policy"
+resource "aws_autoscaling_policy" "frontend_scale_up_policy" {
+  name                   = "frontend_scale-up-policy"
   policy_type            = "SimpleScaling"
-  autoscaling_group_name = aws_autoscaling_group.webapp_asg.name
+  autoscaling_group_name = aws_autoscaling_group.frontend_asg.name
+  scaling_adjustment     = 1
+  adjustment_type        = "ChangeInCapacity"
+}
+
+resource "aws_autoscaling_policy" "backend_scale_up_policy" {
+  name                   = "backend_scale-up-policy"
+  policy_type            = "SimpleScaling"
+  autoscaling_group_name = aws_autoscaling_group.backend_asg.name
   scaling_adjustment     = 1
   adjustment_type        = "ChangeInCapacity"
 }
 
 # Scale down policy
-resource "aws_autoscaling_policy" "scale_down_policy" {
-  name                   = "webapp_scale-down-policy"
+resource "aws_autoscaling_policy" "frontend_scale_down_policy" {
+  name                   = "frontend_scale-down-policy"
   policy_type            = "SimpleScaling"
-  autoscaling_group_name = aws_autoscaling_group.webapp_asg.name
+  autoscaling_group_name = aws_autoscaling_group.frontend_asg.name
+  scaling_adjustment     = -1
+  adjustment_type        = "ChangeInCapacity"
+}
+
+resource "aws_autoscaling_policy" "backend_scale_down_policy" {
+  name                   = "backend_scale-down-policy"
+  policy_type            = "SimpleScaling"
+  autoscaling_group_name = aws_autoscaling_group.backend_asg.name
   scaling_adjustment     = -1
   adjustment_type        = "ChangeInCapacity"
 }
@@ -575,6 +722,10 @@ data "aws_route53_zone" "selected" {
   name = var.domain
 }
 
+data "aws_route53_zone" "sub_select" {
+  name = "api.eventrise.me"
+}
+
 # Create a new A record that points to the Load balancer.
 
 resource "aws_route53_record" "new_record" {
@@ -582,12 +733,19 @@ resource "aws_route53_record" "new_record" {
   name    = data.aws_route53_zone.selected.name
   type    = "A"
   alias {
-    name                   = aws_lb.app-lb.dns_name
-    zone_id                = aws_lb.app-lb.zone_id
+    name                   = aws_lb.frontend-lb.dns_name
+    zone_id                = aws_lb.frontend-lb.zone_id
     evaluate_target_health = true
   }
 }
 
-resource "aws_cloudwatch_log_group" "webapp_log_group" {
-  name = "info6150"
+resource "aws_route53_record" "sub_new_record" {
+  zone_id = data.aws_route53_zone.sub_select.zone_id
+  name    = data.aws_route53_zone.sub_select.name
+  type    = "A"
+  alias {
+    name                   = aws_lb.backend-lb.dns_name
+    zone_id                = aws_lb.backend-lb.zone_id
+    evaluate_target_health = true
+  }
 }
